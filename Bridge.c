@@ -1,65 +1,90 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <stdbool.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <semaphore.h>
 #include <sys/wait.h>
+#include <time.h>
 
-// numero de coches
-#define NUM_CARS 5
+#define VEHICLES 10
 
-// Función para simular la llegada de un auto
-void llegada_auto(int car_id, int write_pipe) {
-    printf("Auto %d ha llegado al puente.\n", car_id);
+// Semáforos
+sem_t *sem_mutex;
 
-    // Simular la espera del auto (opcional)
-    sleep(1);
+// Memoria compartida
+int *vehicles_on_bridge;
+int *bridge_direction;  // 0 = ningún vehículo en el puente, 1 = dirección A->B, -1 = dirección B->A
 
-    // Enviar señal al proceso principal de que el auto está listo para cruzar
-    write(write_pipe, &car_id, sizeof(car_id));
-    printf("Auto %d está esperando para cruzar el puente.\n", car_id);
+void vehicle(int id, int direction) {
+    sem_wait(sem_mutex);
+    while (*vehicles_on_bridge > 0 && *bridge_direction != direction) {
+        sem_post(sem_mutex);
+        usleep(1000); // Esperar un poco antes de intentar de nuevo
+        sem_wait(sem_mutex);
+    }
 
-    // Simular el cruce del puente
-    sleep(2);
-    printf("Auto %d ha cruzado el puente.\n", car_id);
+    // Si el puente está vacío, establecemos la dirección del puente
+    if (*vehicles_on_bridge == 0) {
+        *bridge_direction = direction;
+    }
+
+    // Incrementamos el contador de vehículos en el puente
+    (*vehicles_on_bridge)++;
+    printf("Vehículo %d cruzando en dirección %d\n", id, direction);
+    sem_post(sem_mutex);
+
+    // Simula el tiempo de cruce
+    usleep(rand() % 1000000);
+
+    // Salir del puente
+    sem_wait(sem_mutex);
+    (*vehicles_on_bridge)--;
+    printf("Vehículo %d ha salido en dirección %d\n", id, direction);
+
+    // Si no quedan vehículos en el puente, liberamos la dirección
+    if (*vehicles_on_bridge == 0) {
+        *bridge_direction = 0;
+    }
+    sem_post(sem_mutex);
 }
 
 int main() {
-    int pipe_fd[2];
-    if (pipe(pipe_fd) == -1) {
-        perror("Error al crear la tubería");
-        exit(EXIT_FAILURE);
-    }
+    srand(time(NULL));
 
-    for (int i = 0; i < NUM_CARS; i++) {
+    // Crear semáforo
+    sem_mutex = sem_open("/sem_mutex", O_CREAT, 0666, 1);
+
+    // Configurar memoria compartida
+    int shm_fd = shm_open("/shm_bridge", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(int) * 2);
+    int *shared_memory = mmap(0, sizeof(int) * 2, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    vehicles_on_bridge = &shared_memory[0];
+    bridge_direction = &shared_memory[1];
+
+    *vehicles_on_bridge = 0;
+    *bridge_direction = 0;
+
+    // Crear procesos para cada vehículo
+    for (int i = 0; i < VEHICLES; i++) {
+        int direction = rand() % 2 == 0 ? 1 : -1;
         pid_t pid = fork();
-        if (pid == -1) {
-            perror("Error al crear el proceso hijo");
-            exit(EXIT_FAILURE);
-        } else if (pid == 0) { // Proceso hijo
-            close(pipe_fd[0]); // Cerrar el extremo de lectura de la tubería
-            llegada_auto(i + 1, pipe_fd[1]);
-            close(pipe_fd[1]); // Cerrar el extremo de escritura de la tubería
+
+        if (pid == 0) {
+            vehicle(i + 1, direction);
             exit(0);
         }
     }
 
-    // Proceso principal
-    close(pipe_fd[1]); // Cerrar el extremo de escritura de la tubería
-    int car_id;
-    for (int i = 0; i < NUM_CARS; i++) {
-        // Leer el id del auto que está listo para cruzar
-        read(pipe_fd[0], &car_id, sizeof(car_id));
-        printf("El puente está ahora abierto para el auto %d.\n", car_id);
-
-        // Simular que el puente está abierto para este auto
-        sleep(3);
-        printf("El puente está ahora cerrado para el auto %d.\n", car_id);
-
-        // Esperar a que el proceso hijo termine
+    // Esperar a que todos los procesos hijos terminen
+    for (int i = 0; i < VEHICLES; i++) {
         wait(NULL);
     }
-    close(pipe_fd[0]); // Cerrar el extremo de lectura de la tubería
 
-    printf("Todos los autos han cruzado el puente.\n");
+    // Liberar recursos
+    sem_close(sem_mutex);
+    sem_unlink("/sem_mutex");
+    shm_unlink("/shm_bridge");
+
     return 0;
 }
