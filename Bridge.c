@@ -1,44 +1,47 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <semaphore.h>
 #include <sys/wait.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
 #include <time.h>
 
 #define VEHICLES 10
 
-// Semáforos
-sem_t *sem_mutex;
+// Definición para las operaciones de semáforo
+struct sembuf sem_wait = {0, -1, 0};  // P() - Decrementa el semáforo
+struct sembuf sem_signal = {0, 1, 0}; // V() - Incrementa el semáforo
 
-// Memoria compartida
-int *vehicles_on_bridge;
-int *bridge_direction;  // 0 = ningún vehículo en el puente, 1 = dirección A->B, -1 = dirección B->A
+// Identificadores para la memoria compartida y el semáforo
+int shm_id, sem_id;
+int *vehicles_on_bridge, *bridge_direction;
 
+// Función que representa el comportamiento de un vehículo
 void vehicle(int id, int direction) {
-    sem_wait(sem_mutex);
+    // Acceder al semáforo para sincronizar el acceso al puente
+    semop(sem_id, &sem_wait, 1);
     while (*vehicles_on_bridge > 0 && *bridge_direction != direction) {
-        sem_post(sem_mutex);
-        usleep(1000); // Esperar un poco antes de intentar de nuevo
-        sem_wait(sem_mutex);
+        semop(sem_id, &sem_signal, 1);  // Libera el semáforo mientras espera
+        usleep(1000);                    // Espera un poco antes de intentar de nuevo
+        semop(sem_id, &sem_wait, 1);     // Intenta adquirir el semáforo nuevamente
     }
 
-    // Si el puente está vacío, establecemos la dirección del puente
+    // Si el puente está vacío, establece la dirección del puente
     if (*vehicles_on_bridge == 0) {
         *bridge_direction = direction;
     }
 
-    // Incrementamos el contador de vehículos en el puente
+    // Incrementa el contador de vehículos en el puente
     (*vehicles_on_bridge)++;
     printf("Vehículo %d cruzando en dirección %d\n", id, direction);
-    sem_post(sem_mutex);
+    semop(sem_id, &sem_signal, 1);  // Libera el semáforo
 
     // Simula el tiempo de cruce
     usleep(rand() % 1000000);
 
     // Salir del puente
-    sem_wait(sem_mutex);
+    semop(sem_id, &sem_wait, 1);
     (*vehicles_on_bridge)--;
     printf("Vehículo %d ha salido en dirección %d\n", id, direction);
 
@@ -46,19 +49,19 @@ void vehicle(int id, int direction) {
     if (*vehicles_on_bridge == 0) {
         *bridge_direction = 0;
     }
-    sem_post(sem_mutex);
+    semop(sem_id, &sem_signal, 1);  // Libera el semáforo
 }
 
 int main() {
     srand(time(NULL));
 
-    // Crear semáforo
-    sem_mutex = sem_open("/sem_mutex", O_CREAT, 0666, 1);
+    // Crear semáforo de System V (1 semáforo en el conjunto)
+    sem_id = semget(IPC_PRIVATE, 1, IPC_CREAT | 0666);
+    semctl(sem_id, 0, SETVAL, 1);  // Inicializar el semáforo a 1
 
-    // Configurar memoria compartida
-    int shm_fd = shm_open("/shm_bridge", O_CREAT | O_RDWR, 0666);
-    ftruncate(shm_fd, sizeof(int) * 2);
-    int *shared_memory = mmap(0, sizeof(int) * 2, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    // Configurar memoria compartida para variables de control
+    shm_id = shmget(IPC_PRIVATE, sizeof(int) * 2, IPC_CREAT | 0666);
+    int *shared_memory = (int *)shmat(shm_id, NULL, 0);
     vehicles_on_bridge = &shared_memory[0];
     bridge_direction = &shared_memory[1];
 
@@ -81,10 +84,10 @@ int main() {
         wait(NULL);
     }
 
-    // Liberar recursos
-    sem_close(sem_mutex);
-    sem_unlink("/sem_mutex");
-    shm_unlink("/shm_bridge");
+    // Liberar recursos compartidos
+    semctl(sem_id, 0, IPC_RMID);  // Eliminar el semáforo
+    shmdt(shared_memory);         // Desvincular memoria compartida
+    shmctl(shm_id, IPC_RMID, 0);  // Eliminar la memoria compartida
 
     return 0;
 }
