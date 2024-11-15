@@ -19,12 +19,16 @@ int *vehicles_on_bridge, *bridge_direction;
 
 // Función que representa el comportamiento de un vehículo
 void vehicle(int id, int direction) {
-    // Acceder al semáforo para sincronizar el acceso al puente
-    semop(sem_id, &sem_wait, 1);
+    const char *dir_text = (direction == 1) ? "Norte" : "Sur";
+    sleep(1);
+    // Mensaje de llegada del vehículo al puente
+    printf("Vehículo %d llegó y quiere cruzar hacia el %s\n", id, dir_text);
+    sleep(1);
+    semop(sem_id, &sem_wait, 1);  // Adquiere el semáforo
     while (*vehicles_on_bridge > 0 && *bridge_direction != direction) {
-        semop(sem_id, &sem_signal, 1);  // Libera el semáforo mientras espera
-        usleep(1000);                    // Espera un poco antes de intentar de nuevo
-        semop(sem_id, &sem_wait, 1);     // Intenta adquirir el semáforo nuevamente
+        semop(sem_id, &sem_signal, 1);  // Libera el semáforo
+        usleep(500000);                  // Espera medio segundo antes de intentar de nuevo
+        semop(sem_id, &sem_wait, 1);     // Reintenta adquirir el semáforo
     }
 
     // Si el puente está vacío, establece la dirección del puente
@@ -34,17 +38,18 @@ void vehicle(int id, int direction) {
 
     // Incrementa el contador de vehículos en el puente
     (*vehicles_on_bridge)++;
-    printf("Vehículo %d cruzando en dirección %d\n", id, direction);
+    printf("Vehículo %d cruzando el puente hacia el %s\n", id, dir_text);
+    sleep(1);
     semop(sem_id, &sem_signal, 1);  // Libera el semáforo
 
-    // Simula el tiempo de cruce
-    usleep(rand() % 1000000);
+    // Simula el tiempo de cruce (1-2 segundos)
+    usleep(1000000 + rand() % 1000000);
 
     // Salir del puente
-    semop(sem_id, &sem_wait, 1);
+    semop(sem_id, &sem_wait, 1);  // Adquiere el semáforo para salir
     (*vehicles_on_bridge)--;
-    printf("Vehículo %d ha salido en dirección %d\n", id, direction);
-
+    printf("Vehículo %d ha salido del puente hacia el %s\n", id, dir_text);
+    sleep(1);
     // Si no quedan vehículos en el puente, liberamos la dirección
     if (*vehicles_on_bridge == 0) {
         *bridge_direction = 0;
